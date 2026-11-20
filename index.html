@@ -349,6 +349,40 @@
       border-color: var(--primary);
     }
 
+    /* Live Copper Rate Bar */
+    .copper-bar {
+      margin: 8px 12px 0;
+      padding: 9px 12px;
+      border-radius: 10px;
+      background: var(--primary-soft);
+      border: 1px solid var(--primary-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .copper-label {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      color: var(--primary-hover);
+    }
+
+    .copper-meta {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 1px;
+    }
+
+    .copper-val {
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--primary);
+      text-align: right;
+    }
+
     .feed-pills {
       display: flex;
       align-items: center;
@@ -523,6 +557,12 @@
       display: flex;
       justify-content: space-between;
       gap: 4px;
+    }
+
+    .ad-time {
+      font-size: 10px;
+      color: var(--muted);
+      font-weight: 600;
     }
 
     .empty-card {
@@ -937,6 +977,14 @@
       </div>
     </header>
 
+    <div class="copper-bar">
+      <div>
+        <div class="copper-label">Live Copper Rate</div>
+        <div id="copper-rate-sub" class="copper-meta">Market indicator</div>
+      </div>
+      <div id="copper-rate-val" class="copper-val">Rs -- / kg</div>
+    </div>
+
     <div class="feed-pills">
       <div class="feed-pills-left">
         <button type="button" class="pill-tab active" data-tab="for-sale">For Sale</button>
@@ -1171,6 +1219,7 @@
       <div class="feed-pills" style="padding:0 0 8px; overflow-x:auto;">
         <div class="feed-pills-left">
           <button type="button" class="pill-tab active" data-at="items">Listings</button>
+          <button type="button" class="pill-tab" data-at="copper">Copper Rate</button>
           <button type="button" class="pill-tab" data-at="users">Users</button>
           <button type="button" class="pill-tab" data-at="reports">Reports</button>
           <button type="button" class="pill-tab" data-at="meta">City & Cat</button>
@@ -1179,6 +1228,22 @@
       </div>
 
       <div id="at-items"></div>
+      <div id="at-copper" style="display:none;">
+        <div class="panel">
+          <h2>Update Live Copper Rate</h2>
+          <form id="copper-form">
+            <div class="f-row">
+              <label for="adm-copper-rate">Copper Rate (Rs / kg)</label>
+              <input id="adm-copper-rate" type="number" inputmode="numeric" placeholder="e.g. 2450" required />
+            </div>
+            <div class="f-row">
+              <label for="adm-copper-note">Note / Market Label</label>
+              <input id="adm-copper-note" type="text" placeholder="e.g. Gujranwala • Today" />
+            </div>
+            <button type="submit" class="btn btn-primary">Save Copper Rate</button>
+          </form>
+        </div>
+      </div>
       <div id="at-users" style="display:none;"></div>
       <div id="at-reports" style="display:none;"></div>
       <div id="at-meta" style="display:none;">
@@ -1370,6 +1435,7 @@
     const K_RP = "sd_v4_reports";
     const K_LG = "sd_v4_logs";
     const K_M = "sd_v4_meta";
+    const K_CR = "sd_v4_copper_rate";
 
     let db = null;
     try {
@@ -1387,6 +1453,7 @@
     let logs = [];
     let usersArr = [];
     let meta = { cities: [], categories: [] };
+    let copperRate = { rate: 0, note: "Market indicator", updatedAt: 0 };
 
     let pickedPhotos = [];
     let oldPhotos = [];
@@ -1396,6 +1463,7 @@
     let unsubListings = null;
     let unsubReqs = null;
     let unsubUsers = null;
+    let unsubCopper = null;
     let lastPostAt = 0;
     let lastReqAt = 0;
     let lastBackPressAt = 0;
@@ -1409,6 +1477,31 @@
       el.classList.add("show");
       clearTimeout(window.__sn);
       window.__sn = setTimeout(() => el.classList.remove("show"), 2200);
+    }
+
+    function formatTimeAgo(ts) {
+      if (!ts) return "Recently";
+      const ms = typeof ts === "number" ? ts : new Date(ts).getTime();
+      if (!Number.isFinite(ms) || ms <= 0) return "Recently";
+      const diffSec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+      if (diffSec < 60) return "Just now";
+      const diffMin = Math.floor(diffSec / 60);
+      if (diffMin < 60) return `${diffMin} ${diffMin === 1 ? "min" : "mins"} ago`;
+      const diffHr = Math.floor(diffMin / 60);
+      if (diffHr < 24) return `${diffHr} ${diffHr === 1 ? "hour" : "hours"} ago`;
+      const diffDay = Math.floor(diffHr / 24);
+      return `${diffDay} ${diffDay === 1 ? "day" : "days"} ago`;
+    }
+
+    function drawCopperRate() {
+      const n = Number(copperRate?.rate || 0);
+      $("copper-rate-val").textContent = n > 0 ? `Rs ${n.toLocaleString()} / kg` : "Rs -- / kg";
+      const parts = [];
+      if (copperRate?.note) parts.push(copperRate.note);
+      if (copperRate?.updatedAt) parts.push("Updated " + formatTimeAgo(copperRate.updatedAt));
+      $("copper-rate-sub").textContent = parts.length ? parts.join(" • ") : "Set rate in Admin";
+      if ($("adm-copper-rate")) $("adm-copper-rate").value = n > 0 ? String(n) : "";
+      if ($("adm-copper-note")) $("adm-copper-note").value = copperRate?.note || "";
     }
 
     function armBackGuard() {
@@ -1522,6 +1615,7 @@
       $("nav-bar").classList.toggle("hidden", noBar);
 
       document.querySelectorAll(".nav-btn").forEach(b => b.classList.toggle("active", b.dataset.v === name));
+      if (name === "home") drawCopperRate();
       if (name === "admin" && isAdmin) drawAdmin();
       window.scrollTo(0, 0);
     }
@@ -1625,6 +1719,7 @@
       if (unsubListings) { unsubListings(); unsubListings = null; }
       if (unsubReqs) { unsubReqs(); unsubReqs = null; }
       if (unsubUsers) { unsubUsers(); unsubUsers = null; }
+      if (unsubCopper) { unsubCopper(); unsubCopper = null; }
       localStorage.removeItem(K_S);
       me = null;
       isAdmin = false;
@@ -1669,6 +1764,7 @@
       if (unsubListings) { unsubListings(); unsubListings = null; }
       if (unsubReqs) { unsubReqs(); unsubReqs = null; }
       if (unsubUsers) { unsubUsers(); unsubUsers = null; }
+      if (unsubCopper) { unsubCopper(); unsubCopper = null; }
       localStorage.removeItem(K_S);
       me = null;
       isAdmin = false;
@@ -1683,6 +1779,7 @@
       if (unsubListings) { unsubListings(); unsubListings = null; }
       if (unsubReqs) { unsubReqs(); unsubReqs = null; }
       if (unsubUsers) { unsubUsers(); unsubUsers = null; }
+      if (unsubCopper) { unsubCopper(); unsubCopper = null; }
 
       listings = loadJ(K_L, []);
       reqs = loadJ(K_R, []);
@@ -1691,11 +1788,21 @@
       reports = loadJ(K_RP, []);
       logs = loadJ(K_LG, []);
       meta = loadJ(K_M, { cities: [], categories: [] });
+      copperRate = loadJ(K_CR, { rate: 0, note: "Market indicator", updatedAt: 0 });
       usersArr = Object.values(loadJ(K_U, {}));
       buildSelects();
+      drawCopperRate();
       drawAll();
 
       if (db) {
+        unsubCopper = onSnapshot(doc(db, "config", "copperRate"), (snap) => {
+          if (snap.exists()) {
+            copperRate = { rate: 0, note: "Market indicator", updatedAt: 0, ...snap.data() };
+            saveJ(K_CR, copperRate);
+            drawCopperRate();
+          }
+        }, () => {});
+
         unsubListings = onSnapshot(query(collection(db, "listings"), orderBy("createdAt", "desc")), (snap) => {
           const remote = snap.docs.map(d => ({ id: d.id, ...d.data() }))
             .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -1712,6 +1819,7 @@
             } else {
               activeItem = updatedActive;
               $("det-badge").textContent = updatedActive.status === "sold" ? "Sold" : "Available";
+              $("det-info").textContent = `${updatedActive.city || "Pakistan"} ${updatedActive.category ? "• " + updatedActive.category : ""} • ${formatTimeAgo(updatedActive.createdAt)}`;
             }
           }
           drawAll();
@@ -1970,6 +2078,7 @@
       const pic = item.photos?.[0]?.url;
       const isFav = favs.includes(item.id);
       const sold = item.status === "sold";
+      const ago = formatTimeAgo(item.createdAt);
 
       card.innerHTML = `
         <div class="ad-img">
@@ -1986,6 +2095,7 @@
             <span>${esc(item.city || "Pakistan")}</span>
             <span>${esc(item.category || "")}</span>
           </div>
+          <div class="ad-time">${esc(ago)}</div>
         </div>
       `;
 
@@ -2073,7 +2183,7 @@
       $("det-badge").textContent = item.status === "sold" ? "Sold" : "Available";
       $("det-badge").className = "chip-loc " + (item.status === "sold" ? "sold" : "");
       $("det-name").textContent = item.title || "Scrap Item";
-      $("det-info").textContent = `${item.city || "Pakistan"} ${item.category ? "• " + item.category : ""}`;
+      $("det-info").textContent = `${item.city || "Pakistan"} ${item.category ? "• " + item.category : ""} • ${formatTimeAgo(item.createdAt)}`;
       $("det-notes").textContent = item.desc || "";
       $("det-seller").textContent = item.ownerName || "Seller";
       $("det-phone").textContent = item.ownerPhone || "";
@@ -2218,7 +2328,7 @@
               ${canDel ? `<button type="button" class="btn btn-danger del-req-btn" style="width:auto; min-height:28px; padding:0 8px; font-size:11px;">Delete</button>` : ""}
             </div>
           </div>
-          <div style="font-size:11px; color:var(--muted); margin-top:3px;">${esc(r.ownerName)} • ${esc(r.city || "Pakistan")}</div>
+          <div style="font-size:11px; color:var(--muted); margin-top:3px;">${esc(r.ownerName)} • ${esc(r.city || "Pakistan")} • ${esc(formatTimeAgo(r.createdAt))}</div>
           <div class="grid-2col" style="margin-top:8px;">
             <a href="tel:${esc(r.phone)}" class="btn btn-secondary" style="min-height:36px; font-size:12px;">Call</a>
             <a href="https://wa.me/${intlPhone(r.phone)}" target="_blank" rel="noopener" class="btn btn-wa" style="min-height:36px; font-size:12px;">WhatsApp</a>
@@ -2295,8 +2405,27 @@
       saveJ(K_LG, logs);
     }
 
+    $("copper-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!isAdmin) return;
+      const rateNum = Number($("adm-copper-rate").value || 0);
+      if (!Number.isFinite(rateNum) || rateNum <= 0) {
+        snack("Enter valid copper rate");
+        return;
+      }
+      const note = cleanText($("adm-copper-note").value, 60) || "Market indicator";
+      copperRate = { rate: Math.min(rateNum, 10000000), note, updatedAt: Date.now() };
+      saveJ(K_CR, copperRate);
+      drawCopperRate();
+      if (db) await setDoc(doc(db, "config", "copperRate"), copperRate, { merge: true }).catch(() => {});
+      pushLog(`Copper rate: Rs ${copperRate.rate.toLocaleString()}/kg`);
+      drawAdmin();
+      snack("Copper rate updated");
+    });
+
     function drawAdmin() {
       if (!isAdmin) return;
+      drawCopperRate();
       usersArr = Object.values(loadJ(K_U, {}));
       $("st-u").textContent = usersArr.length;
       $("st-a").textContent = listings.filter(x => x.status !== "sold").length;
@@ -2306,7 +2435,7 @@
       $("at-items").innerHTML = listings.length
         ? listings.map(x => `
           <div class="admin-card">
-            <strong style="font-size:13px;">${esc(x.title || "Item")}</strong> • <span style="font-size:11px; color:var(--muted);">${esc(x.ownerPhone || "")}</span>
+            <strong style="font-size:13px;">${esc(x.title || "Item")}</strong> • <span style="font-size:11px; color:var(--muted);">${esc(x.ownerPhone || "")} • ${esc(formatTimeAgo(x.createdAt))}</span>
             <div class="btn-strip">
               <button type="button" class="btn btn-tint" data-act="view" data-id="${x.id}">View</button>
               <button type="button" class="btn btn-primary" data-act="sold" data-id="${x.id}">Sold/Avail</button>
@@ -2462,7 +2591,7 @@
       b.addEventListener("click", () => {
         document.querySelectorAll("[data-at]").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
-        ["items", "users", "reports", "meta", "logs"].forEach(n => {
+        ["items", "copper", "users", "reports", "meta", "logs"].forEach(n => {
           $("at-" + n).style.display = b.dataset.at === n ? "block" : "none";
         });
       });
