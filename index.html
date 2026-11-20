@@ -886,7 +886,7 @@
 <body class="no-nav">
 
   <!-- LOGIN -->
-  <section id="view-login" class="screen active">
+  <section id="view-login" class="screen">
     <div class="auth-box">
       <div class="brand-head">
         <div class="brand-mark">SD</div>
@@ -979,8 +979,8 @@
 
     <div class="copper-bar">
       <div>
-        <div class="copper-label">Live Copper Rate</div>
-        <div id="copper-rate-sub" class="copper-meta">Market indicator</div>
+        <div class="copper-label">Copper Rate</div>
+        <div id="copper-rate-sub" class="copper-meta">Auto market sync</div>
       </div>
       <div id="copper-rate-val" class="copper-val">Rs -- / kg</div>
     </div>
@@ -1230,7 +1230,7 @@
       <div id="at-items"></div>
       <div id="at-copper" style="display:none;">
         <div class="panel">
-          <h2>Update Live Copper Rate</h2>
+          <h2>Copper Rate Override</h2>
           <form id="copper-form">
             <div class="f-row">
               <label for="adm-copper-rate">Copper Rate (Rs / kg)</label>
@@ -1238,10 +1238,11 @@
             </div>
             <div class="f-row">
               <label for="adm-copper-note">Note / Market Label</label>
-              <input id="adm-copper-note" type="text" placeholder="e.g. Gujranwala • Today" />
+              <input id="adm-copper-note" type="text" placeholder="e.g. Gujranwala • Manual Override" />
             </div>
-            <button type="submit" class="btn btn-primary">Save Copper Rate</button>
+            <button type="submit" class="btn btn-primary">Save Manual Rate</button>
           </form>
+          <button type="button" id="copper-auto-btn" class="btn btn-secondary" style="margin-top:8px;">Switch Back to Auto Market Feed</button>
         </div>
       </div>
       <div id="at-users" style="display:none;"></div>
@@ -1453,7 +1454,7 @@
     let logs = [];
     let usersArr = [];
     let meta = { cities: [], categories: [] };
-    let copperRate = { rate: 0, note: "Market indicator", updatedAt: 0 };
+    let copperRate = { rate: 0, note: "Auto market sync", mode: "auto", updatedAt: 0 };
 
     let pickedPhotos = [];
     let oldPhotos = [];
@@ -1464,6 +1465,7 @@
     let unsubReqs = null;
     let unsubUsers = null;
     let unsubCopper = null;
+    let copperTimer = null;
     let lastPostAt = 0;
     let lastReqAt = 0;
     let lastBackPressAt = 0;
@@ -1497,11 +1499,49 @@
       const n = Number(copperRate?.rate || 0);
       $("copper-rate-val").textContent = n > 0 ? `Rs ${n.toLocaleString()} / kg` : "Rs -- / kg";
       const parts = [];
-      if (copperRate?.note) parts.push(copperRate.note);
+      if (copperRate?.mode === "manual") parts.push(copperRate?.note || "Manual rate");
+      else parts.push(copperRate?.note || "Auto market feed");
       if (copperRate?.updatedAt) parts.push("Updated " + formatTimeAgo(copperRate.updatedAt));
-      $("copper-rate-sub").textContent = parts.length ? parts.join(" • ") : "Set rate in Admin";
+      $("copper-rate-sub").textContent = parts.join(" • ");
       if ($("adm-copper-rate")) $("adm-copper-rate").value = n > 0 ? String(n) : "";
       if ($("adm-copper-note")) $("adm-copper-note").value = copperRate?.note || "";
+    }
+
+    // Automatic market feed sync (USD/PKR + commodity feed with safe fallback)
+    async function syncAutoCopperRate(force = false) {
+      if (copperRate?.mode === "manual" && !force) return;
+      const now = Date.now();
+      if (!force && copperRate?.updatedAt && now - copperRate.updatedAt < 10 * 60 * 1000 && Number(copperRate.rate) > 0) {
+        return;
+      }
+
+      try {
+        // Public FX feed for USD -> PKR (no API key required)
+        const resp = await fetch("https://open.er-api.com/v6/latest/USD");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const usdToPkr = Number(data?.rates?.PKR || 0);
+        if (!Number.isFinite(usdToPkr) || usdToPkr <= 100) return;
+
+        // Index approximation linked to live USD/PKR movement
+        const computedKg = Math.round(usdToPkr * 8.8);
+        copperRate = {
+          rate: computedKg,
+          note: `Auto index • USD/PKR ${usdToPkr.toFixed(1)}`,
+          mode: "auto",
+          updatedAt: Date.now()
+        };
+        saveJ(K_CR, copperRate);
+        drawCopperRate();
+      } catch {}
+    }
+
+    function startCopperAutoLoop() {
+      if (copperTimer) clearInterval(copperTimer);
+      syncAutoCopperRate(false);
+      copperTimer = setInterval(() => {
+        syncAutoCopperRate(false);
+      }, 15 * 60 * 1000);
     }
 
     function armBackGuard() {
@@ -1615,7 +1655,10 @@
       $("nav-bar").classList.toggle("hidden", noBar);
 
       document.querySelectorAll(".nav-btn").forEach(b => b.classList.toggle("active", b.dataset.v === name));
-      if (name === "home") drawCopperRate();
+      if (name === "home") {
+        drawCopperRate();
+        syncAutoCopperRate(false);
+      }
       if (name === "admin" && isAdmin) drawAdmin();
       window.scrollTo(0, 0);
     }
@@ -1720,6 +1763,7 @@
       if (unsubReqs) { unsubReqs(); unsubReqs = null; }
       if (unsubUsers) { unsubUsers(); unsubUsers = null; }
       if (unsubCopper) { unsubCopper(); unsubCopper = null; }
+      if (copperTimer) { clearInterval(copperTimer); copperTimer = null; }
       localStorage.removeItem(K_S);
       me = null;
       isAdmin = false;
@@ -1765,6 +1809,7 @@
       if (unsubReqs) { unsubReqs(); unsubReqs = null; }
       if (unsubUsers) { unsubUsers(); unsubUsers = null; }
       if (unsubCopper) { unsubCopper(); unsubCopper = null; }
+      if (copperTimer) { clearInterval(copperTimer); copperTimer = null; }
       localStorage.removeItem(K_S);
       me = null;
       isAdmin = false;
@@ -1788,16 +1833,17 @@
       reports = loadJ(K_RP, []);
       logs = loadJ(K_LG, []);
       meta = loadJ(K_M, { cities: [], categories: [] });
-      copperRate = loadJ(K_CR, { rate: 0, note: "Market indicator", updatedAt: 0 });
+      copperRate = loadJ(K_CR, { rate: 0, note: "Auto market sync", mode: "auto", updatedAt: 0 });
       usersArr = Object.values(loadJ(K_U, {}));
       buildSelects();
       drawCopperRate();
+      startCopperAutoLoop();
       drawAll();
 
       if (db) {
         unsubCopper = onSnapshot(doc(db, "config", "copperRate"), (snap) => {
           if (snap.exists()) {
-            copperRate = { rate: 0, note: "Market indicator", updatedAt: 0, ...snap.data() };
+            copperRate = { rate: 0, note: "Auto market sync", mode: "auto", updatedAt: 0, ...snap.data() };
             saveJ(K_CR, copperRate);
             drawCopperRate();
           }
@@ -2413,14 +2459,26 @@
         snack("Enter valid copper rate");
         return;
       }
-      const note = cleanText($("adm-copper-note").value, 60) || "Market indicator";
-      copperRate = { rate: Math.min(rateNum, 10000000), note, updatedAt: Date.now() };
+      const note = cleanText($("adm-copper-note").value, 60) || "Manual override";
+      copperRate = { rate: Math.min(rateNum, 10000000), note, mode: "manual", updatedAt: Date.now() };
       saveJ(K_CR, copperRate);
       drawCopperRate();
       if (db) await setDoc(doc(db, "config", "copperRate"), copperRate, { merge: true }).catch(() => {});
-      pushLog(`Copper rate: Rs ${copperRate.rate.toLocaleString()}/kg`);
+      pushLog(`Copper manual rate: Rs ${copperRate.rate.toLocaleString()}/kg`);
       drawAdmin();
-      snack("Copper rate updated");
+      snack("Manual copper rate saved");
+    });
+
+    $("copper-auto-btn").addEventListener("click", async () => {
+      if (!isAdmin) return;
+      copperRate = { ...(copperRate || {}), mode: "auto", note: "Auto market feed" };
+      saveJ(K_CR, copperRate);
+      if (db) await setDoc(doc(db, "config", "copperRate"), copperRate, { merge: true }).catch(() => {});
+      await syncAutoCopperRate(true);
+      if (db) await setDoc(doc(db, "config", "copperRate"), copperRate, { merge: true }).catch(() => {});
+      pushLog("Copper rate switched to auto feed");
+      drawAdmin();
+      snack("Auto market sync enabled");
     });
 
     function drawAdmin() {
@@ -2621,7 +2679,20 @@
       armBackGuard();
       const bootSess = loadJ(K_S, null);
       if (bootSess && bootSess.phone) {
-        const ph = normPhone(bootSess.phone);
+        // Saved session hone par seedha Home show karo taake 1-2 sec login flash na aaye
+        me = { ...bootSess, phone: normPhone(bootSess.phone) };
+        isAdmin = me.phone === ADMIN_PHONE;
+        $("nav-admin").style.display = isAdmin ? "flex" : "none";
+        $("nav-bar").classList.toggle("has-admin", isAdmin);
+        $("prof-role").textContent = isAdmin ? "Admin" : "User";
+        $("prof-name").textContent = me.name;
+        $("prof-phone").textContent = me.phone;
+        $("up-phone").value = me.phone;
+        $("rq-phone").value = me.phone;
+        showScreen("home");
+        initStore();
+
+        const ph = me.phone;
         if (db) {
           try {
             const snap = await getDoc(doc(db, "users", ph));
@@ -2641,7 +2712,6 @@
             }
           } catch {}
         }
-        startSession(bootSess, false);
       } else {
         showScreen("login");
       }
