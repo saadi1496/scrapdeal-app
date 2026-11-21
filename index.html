@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#065f46" />
   <title>ScrapDeal</title>
+  <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
   <style>
     :root {
       --primary: #065f46;
@@ -637,12 +638,14 @@
       overflow: hidden;
       flex-shrink: 0;
       border: 1px solid var(--line);
+      background: #f3f4f6;
     }
 
     .thumb-box img {
       width: 100%;
       height: 100%;
       object-fit: cover;
+      display: block;
     }
 
     .thumb-box button {
@@ -1061,14 +1064,14 @@
           <div class="media-picker-row">
             <label for="file-photos" class="pick-tile">
               <strong>Add Photos</strong>
-              <small>Multiple allowed</small>
+              <small>All formats + HEIC</small>
             </label>
             <label for="file-video" class="pick-tile">
               <strong id="vid-tile-label">Add Video</strong>
               <small id="vid-tile-sub">Optional</small>
             </label>
           </div>
-          <input id="file-photos" type="file" accept=".jpg,.jpeg,.png,.webp,image/*" multiple style="display:none;" />
+          <input id="file-photos" type="file" accept="image/*,.heic,.heif,.avif,.bmp,.gif,.tiff" multiple style="display:none;" />
           <input id="file-video" type="file" accept="video/*" style="display:none;" />
           <div id="photo-thumbs" class="thumbs-strip"></div>
         </div>
@@ -1516,7 +1519,6 @@
       }
 
       try {
-        // 1. Live USD -> PKR exchange rate
         let usdToPkr = 276.48;
         try {
           const resp = await fetch("https://open.er-api.com/v6/latest/USD");
@@ -1529,7 +1531,6 @@
           }
         } catch {}
 
-        // 2. LME Copper benchmark ($12,230.50 / metric ton = $12.2305 / kg)
         let lmeUsdPerTon = 12230.5;
         try {
           const metalResp = await fetch("https://api.metals.live/v1/spot/copper");
@@ -1958,6 +1959,95 @@
       $("up-cat").innerHTML = `<option value="">Select Category</option>${catHtml}`;
     }
 
+    function isHeicFile(file) {
+      const name = String(file?.name || "").toLowerCase();
+      const type = String(file?.type || "").toLowerCase();
+      return type.includes("heic") || type.includes("heif") || /\.(heic|heif)$/i.test(name);
+    }
+
+    function isImageFile(file) {
+      if (!file) return false;
+      if (file.type && file.type.startsWith("image/")) return true;
+      return isHeicFile(file) || /\.(jpg|jpeg|png|webp|gif|bmp|avif|tiff)$/i.test(String(file.name || ""));
+    }
+
+    // Converts HEIC/HEIF or large images to fast-loading JPEG file + instant preview URL
+    async function normalizeImageFile(file, maxDim = 1600, quality = 0.84) {
+      let workingFile = file;
+
+      if (isHeicFile(file)) {
+        if (typeof window.heic2any === "function") {
+          try {
+            const converted = await window.heic2any({
+              blob: file,
+              toType: "image/jpeg",
+              quality
+            });
+            const outBlob = Array.isArray(converted) ? converted[0] : converted;
+            if (outBlob) {
+              const baseName = (file.name || "photo").replace(/\.(heic|heif)$/i, "") + ".jpg";
+              workingFile = new File([outBlob], baseName, { type: "image/jpeg" });
+            }
+          } catch {}
+        }
+      }
+
+      try {
+        let sourceEl = null;
+        let width = 0;
+        let height = 0;
+
+        if (typeof createImageBitmap === "function") {
+          try {
+            const bmp = await createImageBitmap(workingFile);
+            sourceEl = bmp;
+            width = bmp.width;
+            height = bmp.height;
+          } catch {}
+        }
+
+        if (!sourceEl) {
+          const objUrl = URL.createObjectURL(workingFile);
+          try {
+            const img = await new Promise((resolve, reject) => {
+              const el = new Image();
+              el.onload = () => resolve(el);
+              el.onerror = reject;
+              el.src = objUrl;
+            });
+            sourceEl = img;
+            width = img.naturalWidth || img.width;
+            height = img.naturalHeight || img.height;
+          } finally {
+            URL.revokeObjectURL(objUrl);
+          }
+        }
+
+        if (sourceEl && width > 0 && height > 0) {
+          const scale = Math.min(1, maxDim / Math.max(width, height));
+          const targetW = Math.max(1, Math.round(width * scale));
+          const targetH = Math.max(1, Math.round(height * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(sourceEl, 0, 0, targetW, targetH);
+          if (typeof sourceEl.close === "function") sourceEl.close();
+
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+          if (blob) {
+            const jpgName = (workingFile.name || "photo").replace(/\.[^.]+$/, "") + ".jpg";
+            const finalFile = new File([blob], jpgName, { type: "image/jpeg" });
+            const previewUrl = URL.createObjectURL(finalFile);
+            return { file: finalFile, previewUrl };
+          }
+        }
+      } catch {}
+
+      const fallbackPreview = URL.createObjectURL(workingFile);
+      return { file: workingFile, previewUrl: fallbackPreview };
+    }
+
     function toDataUrl(file) {
       return new Promise((res, rej) => {
         const r = new FileReader();
@@ -1982,16 +2072,20 @@
       return { url: localUrl, publicId: "loc_" + Date.now(), kind };
     }
 
-    $("file-photos").addEventListener("change", (e) => {
+    $("file-photos").addEventListener("change", async (e) => {
       const files = Array.from(e.target.files || []);
-      for (const f of files) {
-        if (!f.type.startsWith("image/")) { snack("Images only"); continue; }
-        if (f.size > 10 * 1024 * 1024) { snack("Max 10MB"); continue; }
-        if (oldPhotos.length + pickedPhotos.length >= 6) { snack("Max 6 photos"); break; }
-        pickedPhotos.push(f);
-      }
       e.target.value = "";
-      drawThumbs();
+      if (!files.length) return;
+
+      for (const f of files) {
+        if (!isImageFile(f)) { snack("Unsupported image format"); continue; }
+        if (f.size > 25 * 1024 * 1024) { snack("Max 25MB"); continue; }
+        if (oldPhotos.length + pickedPhotos.length >= 6) { snack("Max 6 photos"); break; }
+
+        const normalized = await normalizeImageFile(f);
+        pickedPhotos.push(normalized);
+        drawThumbs();
+      }
     });
 
     function drawThumbs() {
@@ -2003,17 +2097,21 @@
         d.innerHTML = `<img src="${p.url}" alt="" /><button type="button" data-t="o" data-i="${i}">✕</button>`;
         strip.appendChild(d);
       });
-      pickedPhotos.forEach((f, i) => {
+      pickedPhotos.forEach((item, i) => {
         const d = document.createElement("div");
         d.className = "thumb-box";
-        d.innerHTML = `<img src="${URL.createObjectURL(f)}" alt="" /><button type="button" data-t="n" data-i="${i}">✕</button>`;
+        d.innerHTML = `<img src="${item.previewUrl}" alt="" /><button type="button" data-t="n" data-i="${i}">✕</button>`;
         strip.appendChild(d);
       });
       strip.querySelectorAll("button").forEach(b => {
         b.addEventListener("click", () => {
           const idx = Number(b.dataset.i);
-          if (b.dataset.t === "o") oldPhotos.splice(idx, 1);
-          else pickedPhotos.splice(idx, 1);
+          if (b.dataset.t === "o") {
+            oldPhotos.splice(idx, 1);
+          } else {
+            const removed = pickedPhotos.splice(idx, 1)[0];
+            if (removed?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(removed.previewUrl);
+          }
           drawThumbs();
         });
       });
@@ -2077,7 +2175,8 @@
       const photos = [...oldPhotos];
       for (let i = 0; i < pickedPhotos.length; i++) {
         st.textContent = `Uploading photo ${i + 1}/${pickedPhotos.length}...`;
-        photos.push(await sendMedia(pickedPhotos[i], "image"));
+        const fileToUpload = pickedPhotos[i]?.file || pickedPhotos[i];
+        photos.push(await sendMedia(fileToUpload, "image"));
       }
 
       let video = oldVideo;
@@ -2132,6 +2231,9 @@
       $("vid-tile-label").textContent = "Add Video";
       $("vid-tile-sub").textContent = "Optional";
       $("up-phone").value = me?.phone || "";
+      pickedPhotos.forEach(p => {
+        if (p?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(p.previewUrl);
+      });
       pickedPhotos = [];
       oldPhotos = [];
       pickedVideo = null;
