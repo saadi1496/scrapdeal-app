@@ -979,8 +979,8 @@
 
     <div class="copper-bar">
       <div>
-        <div class="copper-label">Copper Rate</div>
-        <div id="copper-rate-sub" class="copper-meta">Auto market sync</div>
+        <div class="copper-label">Copper Rate (LME PKR)</div>
+        <div id="copper-rate-sub" class="copper-meta">LME + Live FX sync</div>
       </div>
       <div id="copper-rate-val" class="copper-val">Rs -- / kg</div>
     </div>
@@ -1234,7 +1234,7 @@
           <form id="copper-form">
             <div class="f-row">
               <label for="adm-copper-rate">Copper Rate (Rs / kg)</label>
-              <input id="adm-copper-rate" type="number" inputmode="numeric" placeholder="e.g. 2450" required />
+              <input id="adm-copper-rate" type="number" inputmode="numeric" placeholder="e.g. 3380" required />
             </div>
             <div class="f-row">
               <label for="adm-copper-note">Note / Market Label</label>
@@ -1242,7 +1242,7 @@
             </div>
             <button type="submit" class="btn btn-primary">Save Manual Rate</button>
           </form>
-          <button type="button" id="copper-auto-btn" class="btn btn-secondary" style="margin-top:8px;">Switch Back to Auto Market Feed</button>
+          <button type="button" id="copper-auto-btn" class="btn btn-secondary" style="margin-top:8px;">Switch Back to LME PKR Auto Feed</button>
         </div>
       </div>
       <div id="at-users" style="display:none;"></div>
@@ -1333,7 +1333,7 @@
           </div>
           <div class="f-row">
             <label for="rq-rate">Rate</label>
-            <input id="rq-rate" type="text" placeholder="e.g. Rs 2,200/kg" />
+            <input id="rq-rate" type="text" placeholder="e.g. Rs 3,350/kg" />
           </div>
         </div>
         <div class="f-row">
@@ -1454,7 +1454,7 @@
     let logs = [];
     let usersArr = [];
     let meta = { cities: [], categories: [] };
-    let copperRate = { rate: 0, note: "Auto market sync", mode: "auto", updatedAt: 0 };
+    let copperRate = { rate: 0, note: "LME + Live FX sync", mode: "auto", updatedAt: 0 };
 
     let pickedPhotos = [];
     let oldPhotos = [];
@@ -1500,39 +1500,66 @@
       $("copper-rate-val").textContent = n > 0 ? `Rs ${n.toLocaleString()} / kg` : "Rs -- / kg";
       const parts = [];
       if (copperRate?.mode === "manual") parts.push(copperRate?.note || "Manual rate");
-      else parts.push(copperRate?.note || "Auto market feed");
+      else parts.push(copperRate?.note || "LME + Live FX sync");
       if (copperRate?.updatedAt) parts.push("Updated " + formatTimeAgo(copperRate.updatedAt));
       $("copper-rate-sub").textContent = parts.join(" • ");
       if ($("adm-copper-rate")) $("adm-copper-rate").value = n > 0 ? String(n) : "";
       if ($("adm-copper-note")) $("adm-copper-note").value = copperRate?.note || "";
     }
 
-    // Automatic market feed sync (USD/PKR + commodity feed with safe fallback)
+    // LME Copper (USD/ton -> USD/kg) * Live USD/PKR rate
     async function syncAutoCopperRate(force = false) {
       if (copperRate?.mode === "manual" && !force) return;
       const now = Date.now();
-      if (!force && copperRate?.updatedAt && now - copperRate.updatedAt < 10 * 60 * 1000 && Number(copperRate.rate) > 0) {
+      if (!force && copperRate?.updatedAt && now - copperRate.updatedAt < 10 * 60 * 1000 && Number(copperRate.rate) > 1000) {
         return;
       }
 
       try {
-        // Public FX feed for USD -> PKR (no API key required)
-        const resp = await fetch("https://open.er-api.com/v6/latest/USD");
-        if (!resp.ok) return;
-        const data = await resp.json();
-        const usdToPkr = Number(data?.rates?.PKR || 0);
-        if (!Number.isFinite(usdToPkr) || usdToPkr <= 100) return;
+        // 1. Live USD -> PKR exchange rate
+        let usdToPkr = 276.48;
+        try {
+          const resp = await fetch("https://open.er-api.com/v6/latest/USD");
+          if (resp.ok) {
+            const data = await resp.json();
+            const liveFx = Number(data?.rates?.PKR || 0);
+            if (Number.isFinite(liveFx) && liveFx > 100) {
+              usdToPkr = liveFx;
+            }
+          }
+        } catch {}
 
-        // Index approximation linked to live USD/PKR movement
-        const computedKg = Math.round(usdToPkr * 8.8);
-        copperRate = {
-          rate: computedKg,
-          note: `Auto index • USD/PKR ${usdToPkr.toFixed(1)}`,
-          mode: "auto",
-          updatedAt: Date.now()
-        };
-        saveJ(K_CR, copperRate);
-        drawCopperRate();
+        // 2. LME Copper benchmark ($12,230.50 / metric ton = $12.2305 / kg)
+        let lmeUsdPerTon = 12230.5;
+        try {
+          const metalResp = await fetch("https://api.metals.live/v1/spot/copper");
+          if (metalResp.ok) {
+            const metalData = await metalResp.json();
+            const rawVal = Array.isArray(metalData)
+              ? Number(metalData[0]?.copper || metalData[0]?.price || 0)
+              : Number(metalData?.copper || metalData?.price || 0);
+            if (Number.isFinite(rawVal) && rawVal > 0) {
+              lmeUsdPerTon = rawVal < 50 ? rawVal * 2204.62 : rawVal;
+            }
+          }
+        } catch {}
+
+        const usdPerKg = lmeUsdPerTon / 1000;
+        const computedKg = Math.round(usdPerKg * usdToPkr);
+
+        if (computedKg > 1000) {
+          copperRate = {
+            rate: computedKg,
+            note: `LME $${Math.round(lmeUsdPerTon).toLocaleString()}/t • USD/PKR ${usdToPkr.toFixed(1)}`,
+            mode: "auto",
+            updatedAt: Date.now()
+          };
+          saveJ(K_CR, copperRate);
+          drawCopperRate();
+          if (db && isAdmin) {
+            await setDoc(doc(db, "config", "copperRate"), copperRate, { merge: true }).catch(() => {});
+          }
+        }
       } catch {}
     }
 
@@ -1833,7 +1860,7 @@
       reports = loadJ(K_RP, []);
       logs = loadJ(K_LG, []);
       meta = loadJ(K_M, { cities: [], categories: [] });
-      copperRate = loadJ(K_CR, { rate: 0, note: "Auto market sync", mode: "auto", updatedAt: 0 });
+      copperRate = loadJ(K_CR, { rate: 0, note: "LME + Live FX sync", mode: "auto", updatedAt: 0 });
       usersArr = Object.values(loadJ(K_U, {}));
       buildSelects();
       drawCopperRate();
@@ -1843,7 +1870,7 @@
       if (db) {
         unsubCopper = onSnapshot(doc(db, "config", "copperRate"), (snap) => {
           if (snap.exists()) {
-            copperRate = { rate: 0, note: "Auto market sync", mode: "auto", updatedAt: 0, ...snap.data() };
+            copperRate = { rate: 0, note: "LME + Live FX sync", mode: "auto", updatedAt: 0, ...snap.data() };
             saveJ(K_CR, copperRate);
             drawCopperRate();
           }
@@ -2471,14 +2498,14 @@
 
     $("copper-auto-btn").addEventListener("click", async () => {
       if (!isAdmin) return;
-      copperRate = { ...(copperRate || {}), mode: "auto", note: "Auto market feed" };
+      copperRate = { ...(copperRate || {}), mode: "auto", note: "LME + Live FX sync" };
       saveJ(K_CR, copperRate);
       if (db) await setDoc(doc(db, "config", "copperRate"), copperRate, { merge: true }).catch(() => {});
       await syncAutoCopperRate(true);
       if (db) await setDoc(doc(db, "config", "copperRate"), copperRate, { merge: true }).catch(() => {});
-      pushLog("Copper rate switched to auto feed");
+      pushLog("Copper rate switched to LME PKR auto feed");
       drawAdmin();
-      snack("Auto market sync enabled");
+      snack("LME PKR auto sync enabled");
     });
 
     function drawAdmin() {
@@ -2679,7 +2706,6 @@
       armBackGuard();
       const bootSess = loadJ(K_S, null);
       if (bootSess && bootSess.phone) {
-        // Saved session hone par seedha Home show karo taake 1-2 sec login flash na aaye
         me = { ...bootSess, phone: normPhone(bootSess.phone) };
         isAdmin = me.phone === ADMIN_PHONE;
         $("nav-admin").style.display = isAdmin ? "flex" : "none";
